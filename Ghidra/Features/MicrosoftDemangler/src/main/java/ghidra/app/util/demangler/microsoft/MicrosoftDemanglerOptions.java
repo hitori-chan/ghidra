@@ -15,6 +15,7 @@
  */
 package ghidra.app.util.demangler.microsoft;
 
+import generic.json.Json;
 import ghidra.app.util.demangler.DemanglerOptions;
 
 /**
@@ -22,24 +23,29 @@ import ghidra.app.util.demangler.DemanglerOptions;
  */
 public class MicrosoftDemanglerOptions extends DemanglerOptions {
 
+	// Processing options
 	private boolean errorOnRemainingChars;
 	private MsCInterpretation interpretation;
+
+	// Output options:
+	private boolean useEncodedAnonymousNamespace;
+	private boolean applyUdtArgumentTypeTag; // specific to MS for now
+
+	/**
+	 * Constructor for MicrosoftDemanglerOptions
+	 * @param errorOnRemainingCharsArg {@code true} to error on remaining characters
+	 */
+	public MicrosoftDemanglerOptions(boolean errorOnRemainingCharsArg) {
+		this();
+		errorOnRemainingChars = errorOnRemainingCharsArg; // override defaultInits()
+	}
 
 	/**
 	 * Default constructor for MicrosoftDemanglerOptions
 	 */
 	public MicrosoftDemanglerOptions() {
-		this(true);
-		interpretation = MsCInterpretation.FUNCTION_IF_EXISTS;
-	}
-
-	/**
-	 * Constructor for MicrosoftDemanglerOptions
-	 * @param errorOnRemainingChars {@code true} to error on remaining characters
-	 */
-	public MicrosoftDemanglerOptions(boolean errorOnRemainingChars) {
 		super();
-		this.errorOnRemainingChars = errorOnRemainingChars;
+		defaultInits();
 	}
 
 	/**
@@ -48,15 +54,22 @@ public class MicrosoftDemanglerOptions extends DemanglerOptions {
 	 */
 	public MicrosoftDemanglerOptions(DemanglerOptions copy) {
 		super(copy);
-
 		if (copy instanceof MicrosoftDemanglerOptions mCopy) {
 			errorOnRemainingChars = mCopy.errorOnRemainingChars;
 			interpretation = mCopy.interpretation;
+			useEncodedAnonymousNamespace = mCopy.useEncodedAnonymousNamespace;
+			applyUdtArgumentTypeTag = mCopy.applyUdtArgumentTypeTag;
 		}
 		else {
-			errorOnRemainingChars = true;
-			interpretation = MsCInterpretation.FUNCTION_IF_EXISTS;
+			defaultInits();
 		}
+	}
+
+	private void defaultInits() {
+		errorOnRemainingChars = true;
+		interpretation = MsCInterpretation.FUNCTION_IF_EXISTS;
+		useEncodedAnonymousNamespace = true;
+		applyUdtArgumentTypeTag = false;
 	}
 
 	/**
@@ -94,16 +107,46 @@ public class MicrosoftDemanglerOptions extends DemanglerOptions {
 		return interpretation;
 	}
 
+	/**
+	 * Sets the output flag to use an anonymous namespace's encoded number to craft a namespace
+	 * containing this number instead of using the generic "`anonymous namespace'" name.  Default
+	 * is true (to create a namespace containing the encoded number)
+	 * @param useEncodedAnonymousNamespaceArg  {@code true} to use
+	 */
+	public void setUseEncodedAnonymousNamespace(boolean useEncodedAnonymousNamespaceArg) {
+		useEncodedAnonymousNamespace = useEncodedAnonymousNamespaceArg;
+	}
+
+	/**
+	 * Returns {@code true} if the output flag is set to use an anonymous namespace's encoded
+	 * number to craft a namespace containing the number instead of using the generic
+	 * "`anonymous namespace'" name.
+	 * @return {@code true} if encoded number is used to craft a namespace
+	 */
+	public boolean getUseEncodedAnonymousNamespace() {
+		return useEncodedAnonymousNamespace;
+	}
+
+	/**
+	 * Sets the output flag for applying user-defined tags (e.g., class, struct, union, enum)
+	 * within template and function arguments.  Default is {@code true} (to apply)
+	 * @param applyUdtArgumentTypeTagArg {@code true} to apply the tags
+	 */
+	public void setApplyUdtArgumentTypeTag(boolean applyUdtArgumentTypeTagArg) {
+		applyUdtArgumentTypeTag = applyUdtArgumentTypeTagArg;
+	}
+
+	/**
+	 * Returns {@code true} if the output interpretation is set to apply user-defined type
+	 * tags (e.g., class, struct, union, enum) within template and function arguments.
+	 * @return {@code true} if applying the tags
+	 */
+	public boolean getApplyUdtArgumentTypeTag() {
+		return applyUdtArgumentTypeTag;
+	}
+
 	@Override
 	public String toString() {
-		//@formatter:off
-		return "{\n" +
-			"\tdoDisassembly: " + doDisassembly() + ",\n" +
-			"\tapplySignature: " + applySignature() + ",\n" +
-			"\terrorOnRemainingChars: " + errorOnRemainingChars + ",\n" +
-			"\tinterpretation: " + interpretation + ",\n" +
-			"\tdemangleOnlyKnownPatterns: " + demangleOnlyKnownPatterns() + ",\n" +
-		"}";
-		//@formatter:on
+		return Json.toString(this);
 	}
 }

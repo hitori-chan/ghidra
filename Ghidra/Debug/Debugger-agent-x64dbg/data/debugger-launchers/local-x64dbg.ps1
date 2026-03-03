@@ -48,6 +48,9 @@ function Compute-Python-Args {
 	if ("$Env:OPT_TARGET_IMG" -ne "") {
 		$arglist+=($Env:OPT_TARGET_IMG)
 	}
+	if ("$Env:OPT_X64DBG_EXE" -ne "") {
+		$arglist+=($Env:OPT_X64DBG_EXE)
+	}
 	if ("$Env:OPT_TARGET_DIR" -ne "") {
 		$arglist+=($Env:OPT_TARGET_DIR)
 	}

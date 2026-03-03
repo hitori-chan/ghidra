@@ -249,8 +249,8 @@ public:
   virtual void printRaw(ostream &s) const;			///< Print a description of the type to stream
   virtual const TypeField *findTruncation(int8 off,int4 sz,const PcodeOp *op,int4 slot,int8 &newoff) const;
   virtual Datatype *getSubType(int8 off,int8 *newoff) const; ///< Recover component data-type one-level down
-  virtual Datatype *nearestArrayedComponentForward(int8 off,int8 *newoff,int8 *elSize) const;
-  virtual Datatype *nearestArrayedComponentBackward(int8 off,int8 *newoff,int8 *elSize) const;
+  virtual int8 nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
+  virtual int8 nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
 
   /// \brief Get number of bytes at the given offset that are padding
   ///
@@ -500,6 +500,8 @@ public:
   Datatype *getSubEntry(int4 off,int4 sz,int4 *newoff,int4 *el) const;	///< Figure out what a byte range overlaps
   virtual void printRaw(ostream &s) const;
   virtual Datatype *getSubType(int8 off,int8 *newoff) const;
+  virtual int8 nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
+  virtual int8 nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
   virtual int4 getHoleSize(int4 off) const;
   virtual int4 numDepend(void) const { return 1; }
   virtual Datatype *getDepend(int4 index) const { return arrayof; }
@@ -585,8 +587,8 @@ public:
   bool hasBitFieldsInRange(int4 offset,int4 sz) const;	///< Return \b true if \b this structure has 1 or more bitfields in the given byte range
   virtual const TypeField *findTruncation(int8 off,int4 sz,const PcodeOp *op,int4 slot,int8 &newoff) const;
   virtual Datatype *getSubType(int8 off,int8 *newoff) const;
-  virtual Datatype *nearestArrayedComponentForward(int8 off,int8 *newoff,int8 *elSize) const;
-  virtual Datatype *nearestArrayedComponentBackward(int8 off,int8 *newoff,int8 *elSize) const;
+  virtual int8 nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
+  virtual int8 nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
   virtual int4 getHoleSize(int4 off) const;
   virtual int4 numDepend(void) const { return field.size(); }
   virtual Datatype *getDepend(int4 index) const { return field[index].type; }
@@ -803,8 +805,8 @@ public:
   Scope *getMap(void) const;	///< Get the symbol table indexed by \b this
   Address getAddress(uintb off,int4 sz,const Address &point) const;	///< Construct an Address given an offset
   virtual Datatype *getSubType(int8 off,int8 *newoff) const;
-  virtual Datatype *nearestArrayedComponentForward(int8 off,int8 *newoff,int8 *elSize) const;
-  virtual Datatype *nearestArrayedComponentBackward(int8 off,int8 *newoff,int8 *elSize) const;
+  virtual int8 nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
+  virtual int8 nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const;
   virtual int4 compare(const Datatype &op,int4 level) const;
   virtual int4 compareDependency(const Datatype &op) const; // For tree structure
   virtual Datatype *clone(void) const { return new TypeSpacebase(*this); }

@@ -105,7 +105,7 @@ public class SymbolTablePluginTest extends AbstractGhidraHeadedIntegrationTest {
 		viewRefAction = CollectionUtils.any(symbolReferencesActions);
 
 		deleteAction = getAction(plugin, "Delete Symbols");
-		makeSelectionAction = getAction(plugin, "Make Selection");
+		makeSelectionAction = getLocalAction(provider, "Make Selection");
 		setFilterAction = getAction(plugin, "Set Filter");
 		setPinnedAction = getAction(plugin, "Pin Symbol");
 		clearPinnedAction = getAction(plugin, "Clear Pinned Symbol");
@@ -479,6 +479,46 @@ public class SymbolTablePluginTest extends AbstractGhidraHeadedIntegrationTest {
 		assertEquals(expected, symbolTable.getRowCount());
 		assertEquals("Symbol Table (Filter settings matched " + expected + " Symbols)",
 			plugin.getSymbolProvider().getName() + " " + plugin.getSymbolProvider().getSubTitle());
+	}
+
+	private void assertEnabled(DockingActionIf action, boolean expected) {
+
+		ActionContext context = runSwing(() -> provider.getActionContext(null));
+		boolean actual = runSwing(() -> action.isEnabledForContext(context));
+		if (expected) {
+			assertTrue("Action should have been enabled: " + action.getName(), actual);
+		}
+		else {
+			assertFalse("Action should not have been enabled: " + action.getName(), actual);
+		}
+	}
+
+	@Test
+	public void testDeleteAll() throws Exception {
+
+		openProgram("sample");
+
+		//
+		// Test that we can delete all references to a symbol from the symbol table.
+		// 
+		DockingActionIf deleteAllAction = getAction(plugin, "Delete All References");
+		int selectedRows = symbolTable.getSelectedRowCount();
+		assertEquals(0, selectedRows);
+		assertEnabled(deleteAllAction, false);
+
+		// Select a symbol with references
+		int row = findRow("ghidra");
+		Rectangle rect = symbolTable.getCellRect(row, 0, true);
+		symbolTable.scrollRectToVisible(rect);
+		singleClick(symbolTable, row, 0);
+		assertEnabled(deleteAllAction, true);
+
+		Symbol symbol = getSymbol(row);
+		int startRefCount = symbol.getReferenceCount();
+		assertTrue(startRefCount > 0);
+
+		performAction(deleteAllAction, provider, true);
+		assertEquals(0, symbol.getReferenceCount());
 	}
 
 	@Test
@@ -1731,11 +1771,11 @@ public class SymbolTablePluginTest extends AbstractGhidraHeadedIntegrationTest {
 		return (GhidraTableFilterPanel<Symbol>) getInstanceField("tableFilterPanel", panel);
 	}
 
-	private void singleClick(final JTable table, final int row, final int col) throws Exception {
+	private void singleClick(final JTable table, final int row, final int col) {
 		clickTableCell(table, row, col, 1);
 	}
 
-	private void doubleClick(final JTable table, final int row, final int col) throws Exception {
+	private void doubleClick(final JTable table, final int row, final int col) {
 		clickTableCell(table, row, col, 2);
 	}
 

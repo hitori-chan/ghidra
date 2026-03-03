@@ -20,6 +20,7 @@ import ghidra.app.util.datatype.microsoft.DataValidationOptions;
 import ghidra.app.util.datatype.microsoft.MSDataTypeUtils;
 import ghidra.app.util.demangler.*;
 import ghidra.app.util.demangler.microsoft.MicrosoftDemangler;
+import ghidra.app.util.demangler.microsoft.MicrosoftMangledContext;
 import ghidra.docking.settings.SettingsImpl;
 import ghidra.program.model.address.*;
 import ghidra.program.model.data.*;
@@ -594,7 +595,7 @@ public class TypeDescriptorModel extends AbstractCreateDataTypeModel {
 							SourceType.IMPORTED);
 			}
 			catch (DuplicateNameException e) {
-				// ok if it is duplicate as it was likely created in another rtti handling method 
+				// ok if it is duplicate as it was likely created in another rtti handling method
 			}
 			catch (InvalidInputException e) {
 				Msg.error(TypeDescriptorModel.class,
@@ -624,7 +625,7 @@ public class TypeDescriptorModel extends AbstractCreateDataTypeModel {
 			Address address) {
 		MicrosoftDemangler demangler = new MicrosoftDemangler();
 		try {
-			MangledContext mangledContext =
+			MicrosoftMangledContext mangledContext =
 				demangler.createMangledContext(mangledString, null, program, address);
 			DemangledDataType demangledType = demangler.demangleType(mangledContext);
 			if (isPermittedType(demangledType)) {

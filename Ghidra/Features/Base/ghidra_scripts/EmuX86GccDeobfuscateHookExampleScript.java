@@ -23,11 +23,15 @@
 // data.  This script hooks the functions "malloc", "free" and "use_string" where the later
 // simply prints the deobfuscated string passed as an argument.
 //@category Examples.Emulation
+import java.lang.invoke.MethodHandles;
 import java.util.*;
 
 import ghidra.app.script.GhidraScript;
 import ghidra.app.util.opinion.ElfLoader;
 import ghidra.pcode.emu.*;
+import ghidra.pcode.emu.jit.JitConfiguration;
+import ghidra.pcode.emu.jit.JitConfiguration.Opt;
+import ghidra.pcode.emu.jit.JitPcodeEmulator;
 import ghidra.pcode.exec.*;
 import ghidra.program.model.address.*;
 import ghidra.program.model.lang.InsufficientBytesException;
@@ -94,13 +98,23 @@ public class EmuX86GccDeobfuscateHookExampleScript extends GhidraScript {
 		strlenEntry = getExternalThunkAddress("strlen");
 
 		// Establish emulator
-		emu = new PcodeEmulator(currentProgram.getLanguage()) {
+		emu = new JitPcodeEmulator(currentProgram.getLanguage(), new JitConfiguration(
+			Opt.REMOVE_UNUSED_OPERATIONS, Opt.EMIT_COUNTERS/*, Opt.LOG_STACK_TRACES*/),
+			MethodHandles.lookup()) {
+
 			@Override
 			protected PcodeUseropLibrary<byte[]> createUseropLibrary() {
 				return super.createUseropLibrary().compose(new DeobfUseropLibrary<byte[]>());
 			}
+
+			@Override
+			public boolean isSuspended() {
+				// Because the monitor-cancelled listener isn't reliable
+				return super.isSuspended() || monitor.isCancelled();
+			}
 		};
 		monitor.addCancelledListener(() -> {
+			// Why isn't this reliable?
 			emu.setSuspended(true);
 		});
 		emuThread = emu.newThread();

@@ -179,30 +179,33 @@ Datatype *Datatype::getSubType(int8 off,int8 *newoff) const
   return (Datatype *)0;
 }
 
-/// Find the first component data-type that is (or contains) an array starting after the given
-/// offset, and pass back the difference between the component's start and the given offset.
-/// Return the component data-type or null if no array is found.
+/// If \b this data-type is (or contains) an array starting after the given
+/// offset, return the distance in bytes to the start of the array,
+/// and pass back the difference between the component's start and the given offset.
 /// \param off is the given offset into \b this data-type
+/// \param max is the maximum distance, in bytes, to search
 /// \param newoff is used to pass back the offset difference
 /// \param elSize is used to pass back the array element size
-/// \return the component data-type or null
-Datatype *Datatype::nearestArrayedComponentForward(int8 off,int8 *newoff,int8 *elSize) const
+/// \return the distance to the array or -1 otherwise
+int8 Datatype::nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
 
 {
-  return (TypeArray *)0;
+  return -1;
 }
 
-/// Find the last component data-type that is (or contains) an array starting before the given
-/// offset, and pass back the difference between the component's start and the given offset.
+/// If \b this data-type is (or contains) an array starting before the given
+/// offset, return the distance in bytes to the end of the array,
+/// and pass back the difference between the component's start and the given offset.
 /// Return the component data-type or null if no array is found.
 /// \param off is the given offset into \b this data-type
+/// \param max is the maximum distance, in bytes, to search
 /// \param newoff is used to pass back the offset difference
 /// \param elSize is used to pass back the array element size
-/// \return the component data-type or null
-Datatype *Datatype::nearestArrayedComponentBackward(int8 off,int8 *newoff,int8 *elSize) const
+/// \return the distance to the array or -1 otherwise
+int8 Datatype::nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
 
 {
-  return (TypeArray *)0;
+  return -1;
 }
 
 /// Order \b this with another data-type, in a way suitable for the type propagation algorithm.
@@ -1132,14 +1135,10 @@ bool TypePointer::testForArraySlack(Datatype *dt,int8 off)
   int8 elSize;
   if (dt->getMetatype() == TYPE_ARRAY)
     return true;
-  Datatype *compType;
   if (off < 0) {
-    compType = dt->nearestArrayedComponentForward(off, &newoff, &elSize);
+    return (dt->nearestArrayedComponentForward(off, 128, &newoff, &elSize) >= 0);
   }
-  else {
-    compType = dt->nearestArrayedComponentBackward(off, &newoff, &elSize);
-  }
-  return (compType != (Datatype *)0);
+  return (dt->nearestArrayedComponentBackward(off, 128, &newoff, &elSize) >= 0);
 }
 
 /// Parse a \<type> element with a child describing the data-type being pointed to
@@ -1175,10 +1174,10 @@ void TypePointer::calcSubmeta(void)
 {
   type_metatype ptrtoMeta = ptrto->getMetatype();
   if (ptrtoMeta == TYPE_STRUCT) {
-    if (ptrto->numDepend() > 1 || ptrto->isIncomplete())
-      submeta = SUB_PTR_STRUCT;
+    if (ptrto->needsResolution())
+      submeta = SUB_PTR;	// Treat as a more generic pointer, allowing pointer to the component to take precedence
     else
-      submeta = SUB_PTR;
+      submeta = SUB_PTR_STRUCT;
   }
   else if (ptrtoMeta == TYPE_UNION) {
     submeta = SUB_PTR_STRUCT;
@@ -1376,6 +1375,26 @@ Datatype *TypeArray::getSubType(int8 off,int8 *newoff) const
     return Datatype::getSubType(off, newoff);
   *newoff = off % arrayof->getAlignSize();
   return arrayof;
+}
+
+int8 TypeArray::nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
+
+{
+  if (off > 0) return -1;	// Skip if we are in the middle of array
+  *newoff = off;
+  *elSize = arrayof->getAlignSize();
+  return -off;
+}
+
+int8 TypeArray::nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
+
+{
+  if (off < 0) return -1;	// Skip if we are before array
+  *newoff = off;
+  *elSize = arrayof->getAlignSize();
+  if (off <= size)
+    return (size - off);
+  return (off - size);
 }
 
 int4 TypeArray::getHoleSize(int4 off) const
@@ -1886,7 +1905,7 @@ int4 TypeStruct::getHoleSize(int4 off) const
   return getSize() - off;		// Distance to end of structure
 }
 
-Datatype *TypeStruct::nearestArrayedComponentBackward(int8 off,int8 *newoff,int8 *elSize) const
+int8 TypeStruct::nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
 
 {
   int4 firstIndex = getLowerBoundField(off);
@@ -1894,28 +1913,23 @@ Datatype *TypeStruct::nearestArrayedComponentBackward(int8 off,int8 *newoff,int8
   while(i >= 0) {
     const TypeField &subfield( field[i] );
     int8 diff = off - subfield.offset;
-    if (diff > 128) break;
     Datatype *subtype = subfield.type;
-    if (subtype->getMetatype() == TYPE_ARRAY) {
+    int8 suboff;
+    int8 remain = (i == firstIndex) ? diff : subtype->getSize();
+    if (diff - remain > max) break;
+    int8 distance = subtype->nearestArrayedComponentBackward(remain, max, &suboff, elSize);
+    if (distance >= 0) {
+      distance = (diff - remain) + distance;
+      if (distance > max) break;
       *newoff = diff;
-      *elSize = ((TypeArray *)subtype)->getBase()->getAlignSize();
-      return subtype;
-    }
-    else {
-      int8 suboff;
-      int8 remain = (i == firstIndex) ? diff : subtype->getSize() - 1;
-      Datatype *res = subtype->nearestArrayedComponentBackward(remain, &suboff, elSize);
-      if (res != (Datatype *)0) {
-	*newoff = diff;
-	return subtype;
-      }
+      return distance;
     }
     i -= 1;
   }
-  return (Datatype *)0;
+  return -1;
 }
 
-Datatype *TypeStruct::nearestArrayedComponentForward(int8 off,int8 *newoff,int8 *elSize) const
+int8 TypeStruct::nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
 
 {
   int4 i = getLowerBoundField(off);
@@ -1924,39 +1938,26 @@ Datatype *TypeStruct::nearestArrayedComponentForward(int8 off,int8 *newoff,int8 
     i += 1;		// First component starting after
     remain = 0;
   }
-  else {
-    const TypeField &subfield( field[i] );
-    remain = off - subfield.offset;
-    if (remain != 0 && (subfield.type->getMetatype() != TYPE_STRUCT || remain >= subfield.type->getSize())) {
-      i += 1;		// Middle of non-structure that we must go forward from, skip over it
-      remain = 0;
-    }
-  }
+  else
+    remain = off - field[i].offset;
   while(i<field.size()) {
     const TypeField &subfield( field[i] );
     int8 diff = subfield.offset - off;		// The first struct field examined may have a negative diff
-    if (diff > 128) break;
+    if (diff + remain > max) break;
     Datatype *subtype = subfield.type;
-    if (subtype->getMetatype() == TYPE_ARRAY) {
+    int8 suboff;
+    int8 distance = subtype->nearestArrayedComponentForward(remain, max, &suboff, elSize);
+    if (distance >= 0) {
+      distance = diff + remain + distance;
+      if (distance > max)
+	break;
       *newoff = -diff;
-      *elSize = ((TypeArray *)subtype)->getBase()->getAlignSize();
-      return subtype;
-    }
-    else {
-      int8 suboff;
-      Datatype *res = subtype->nearestArrayedComponentForward(remain, &suboff, elSize);
-      if (res != (Datatype *)0) {
-	int8 subdiff = diff + remain - suboff;
-	if (subdiff > 128)
-	  break;
-	*newoff = -diff;
-	return subtype;
-      }
+      return distance;
     }
     i += 1;
     remain = 0;
   }
-  return (Datatype *)0;
+  return -1;
 }
 
 int4 TypeStruct::compare(const Datatype &op,int4 level) const
@@ -3389,7 +3390,7 @@ Datatype *TypeSpacebase::getSubType(int8 off,int8 *newoff) const
   return smallest->getSymbol()->getType();
 }
 
-Datatype *TypeSpacebase::nearestArrayedComponentForward(int8 off,int8 *newoff,int8 *elSize) const
+int8 TypeSpacebase::nearestArrayedComponentForward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
 
 {
   Scope *scope = getMap();
@@ -3406,55 +3407,50 @@ Datatype *TypeSpacebase::nearestArrayedComponentForward(int8 off,int8 *newoff,in
     nextAddr = addr + 32;
   else {
     symbolType = smallest->getSymbol()->getType();
-    if (symbolType->getMetatype() == TYPE_STRUCT) {
-      int8 structOff = addr.getOffset() - smallest->getAddr().getOffset();
-      int8 dummyOff;
-      Datatype *res = symbolType->nearestArrayedComponentForward(structOff, &dummyOff, elSize);
-      if (res != (Datatype *)0) {
-	*newoff = structOff;
-	return symbolType;
-      }
+    int8 structOff = addr.getOffset() - smallest->getAddr().getOffset();
+    int8 dummyOff;
+    int8 distance = symbolType->nearestArrayedComponentForward(structOff, max, &dummyOff, elSize);
+    if (distance >= 0) {
+      if (distance > max)
+	return -1;
+      *newoff = structOff;
+      return distance;
     }
     int8 sz = AddrSpace::byteToAddressInt(smallest->getSize(), spaceid->getWordSize());
     nextAddr = smallest->getAddr() + sz;
   }
   if (nextAddr < addr)
-    return (Datatype *)0;		// Don't let the address wrap
+    return -1;		// Don't let the address wrap
   smallest = scope->queryContainer(nextAddr,1,nullPoint);
   if (smallest == (SymbolEntry *)0 || smallest->getOffset() != 0)
-    return (Datatype *)0;
+    return -1;
   symbolType = smallest->getSymbol()->getType();
   *newoff = addr.getOffset() - smallest->getAddr().getOffset();
-  if (symbolType->getMetatype() == TYPE_ARRAY) {
-    *elSize = ((TypeArray *)symbolType)->getBase()->getAlignSize();
-    return symbolType;
+  int8 dummyOff;
+  int8 distance = symbolType->nearestArrayedComponentForward(0, max, &dummyOff, elSize);
+  if (distance >= 0) {
+    distance = distance - *newoff;
+    if (distance > max)
+      return -1;
+    return distance;
   }
-  if (symbolType->getMetatype() == TYPE_STRUCT) {
-    int8 dummyOff;
-    Datatype *res = symbolType->nearestArrayedComponentForward(0, &dummyOff, elSize);
-    if (res != (Datatype *)0)
-      return symbolType;
-  }
-  return (Datatype *)0;
+  return -1;
 }
 
-Datatype *TypeSpacebase::nearestArrayedComponentBackward(int8 off,int8 *newoff,int8 *elSize) const
+int8 TypeSpacebase::nearestArrayedComponentBackward(int8 off,int8 max,int8 *newoff,int8 *elSize) const
 
 {
   Datatype *subType = getSubType(off, newoff);
   if (subType == (Datatype *)0)
-    return (Datatype *)0;
-  if (subType->getMetatype() == TYPE_ARRAY) {
-    *elSize = ((TypeArray *)subType)->getBase()->getAlignSize();
-    return subType;
+    return -1;
+  int8 dummyOff;
+  int8 distance = subType->nearestArrayedComponentBackward(*newoff,max,&dummyOff,elSize);
+  if (distance >= 0) {
+    if (distance > max)
+      return -1;
+    return distance;
   }
-  if (subType->getMetatype() == TYPE_STRUCT) {
-    int8 dummyOff;
-    Datatype *res = subType->nearestArrayedComponentBackward(*newoff,&dummyOff,elSize);
-    if (res != (Datatype *)0)
-      return subType;
-  }
-  return (Datatype *)0;
+  return -1;
 }
 
 int4 TypeSpacebase::compare(const Datatype &op,int4 level) const

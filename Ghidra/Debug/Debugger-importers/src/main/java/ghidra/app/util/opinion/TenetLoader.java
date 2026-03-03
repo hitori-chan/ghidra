@@ -173,7 +173,29 @@ public class TenetLoader implements Loader {
 			return false;
 		}
 
-		return true;
+		try {
+			final byte[] bytes = new byte[1000];
+			provider.getInputStream(0).read(bytes);
+			final String[] lines = new String(bytes, StandardCharsets.UTF_8).split("\n");
+
+			if (lines.length == 1) {
+				return false;
+			}
+
+			// Skip last line as it could be a partial one
+			for (int i = 0; i < (lines.length - 1); i++) {
+				final String line = lines[i];
+				if (((i != 0) && SLIDE_PATTERN.matcher(line).find()) ||
+					(!SLIDE_PATTERN.matcher(line).find() && !REG_PATTERN.matcher(line).find())) {
+					return false;
+				}
+			}
+
+			return true;
+		}
+		catch (final IOException e) {
+			return false;
+		}
 	}
 
 	/**
@@ -209,7 +231,8 @@ public class TenetLoader implements Loader {
 			final DomainObject domainObject, final boolean loadIntoProgram,
 			final boolean mirrorFsLayout) {
 		final List<Option> list = new ArrayList<>();
-		list.add(new DomainFileOption(DOMAIN_FILE_OPTION_NAME, "", false));
+		list.add(new DomainFileOption(DOMAIN_FILE_OPTION_NAME,
+			COMMAND_LINE_ARG_PREFIX + "-associatedProgram", false));
 		return list;
 	}
 
@@ -258,7 +281,7 @@ public class TenetLoader implements Loader {
 
 			final long start = System.currentTimeMillis();
 
-			trace = this.loadTrace(settings.provider(), settings.importName(), program,
+			trace = loadTrace(settings.provider(), settings.importName(), program,
 				settings.consumer(), settings.log(), settings.monitor());
 
 			final long loadDone = System.currentTimeMillis();
@@ -347,7 +370,7 @@ public class TenetLoader implements Loader {
 
 				snapNumber++;
 
-				this.setupMemoryAndMapping(program, trace, slideValue, snap);
+				setupMemoryAndMapping(program, trace, slideValue, snap);
 
 				try {
 					while (line != null) {
@@ -376,8 +399,8 @@ public class TenetLoader implements Loader {
 						}
 						curIp = Long.parseLong(ipMatcher.group(1), 16);
 
-						if (!this.parseRegisterOperations(snap, curIp, line, lineNumber,
-							traceThread, trace, log, monitor)) {
+						if (!parseRegisterOperations(snap, curIp, line, lineNumber, traceThread,
+							trace, log, monitor)) {
 							errorCount++;
 							lineNumber++;
 							monitor.setProgress(lineNumber);
@@ -391,7 +414,7 @@ public class TenetLoader implements Loader {
 							}
 							continue;
 						}
-						this.parseMemoryOperations(snap, curIp, line, trace, monitor);
+						parseMemoryOperations(snap, curIp, line, trace, monitor);
 
 						lineNumber++;
 						monitor.setProgress(lineNumber);
@@ -475,8 +498,9 @@ public class TenetLoader implements Loader {
 		return true;
 	}
 
-	private void setupMemoryAndMapping(final Program program, final Trace trace, final long slideValue,
-			final long snap) throws DuplicateNameException, TraceOverlappedRegionException {
+	private void setupMemoryAndMapping(final Program program, final Trace trace,
+			final long slideValue, final long snap)
+			throws DuplicateNameException, TraceOverlappedRegionException {
 		final TraceModuleManager modMan = trace.getModuleManager();
 		final TraceStaticMappingManager mapMan = trace.getStaticMappingManager();
 		final URL projectUrl = program.getDomainFile().getLocalProjectURL("");
@@ -522,5 +546,4 @@ public class TenetLoader implements Loader {
 		}
 		return null;
 	}
-
 }

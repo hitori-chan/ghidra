@@ -21,7 +21,9 @@ package mdemangler;
  */
 public class MDOutputOptions {
 
-	private boolean useEncodedAnonymousNamespaceNumber;
+	// These defaults match standard output
+	private boolean useEncodedAnonymousNamespaceNumber = false;
+	private boolean applyUdtArgumentTypeTag = true;
 
 	/**
 	 * Constructor
@@ -46,6 +48,25 @@ public class MDOutputOptions {
 	 */
 	public boolean useEncodedAnonymousNamespace() {
 		return useEncodedAnonymousNamespaceNumber;
+	}
+
+	/**
+	 * Sets the option for whether to apply user-defined type tags when found as template
+	 * or function arguments
+	 * @param applyUdtArgumentTypeTag {@code true} to apply the tag on a complex type when
+	 * used as a template or function argument
+	 */
+	public void setApplyUdtArgumentTypeTag(boolean applyUdtArgumentTypeTag) {
+		this.applyUdtArgumentTypeTag = applyUdtArgumentTypeTag;
+	}
+
+	/**
+	 * Returns {@code true} if the demangler will apply user-defined type tags when found as
+	 * template or function arguments, such as the "struct" in "templateName<struct A,int>"
+	 * @return {@code true} if the flag is set to apply
+	 */
+	public boolean applyUdtArgumentTypeTag() {
+		return applyUdtArgumentTypeTag;
 	}
 
 }

@@ -15,6 +15,7 @@
  */
 package ghidra.app.util.bin.format.dwarf;
 
+import static ghidra.app.util.bin.format.dwarf.DWARFTag.*;
 import static ghidra.app.util.bin.format.dwarf.attribs.DWARFAttributeId.*;
 
 import java.io.IOException;
@@ -115,11 +116,11 @@ public class DWARFFunctionImporter {
 						}
 						break;
 					case DW_TAG_variable:
-						// only process variable definitions that are static variables
-						// (ie. they are children of the compunit root, ie. depth == 1).
-						// Local variables should be children of dw_tag_subprograms
-						// and will be handled in processFuncChildren()
-						if (diea.getDepth() == 1) {
+						// Only process variable definitions that are global static variables
+						// (not nested under a subprogram DIE)
+						// Static variables scoped inside a function should be children of 
+						// dw_tag_subprograms and will be handled in processFuncChildren()
+						if (diea.findAncestor(DW_TAG_subprogram) == null) {
 							outputGlobal(DWARFVariable.readGlobalVariable(diea));
 						}
 						break;
