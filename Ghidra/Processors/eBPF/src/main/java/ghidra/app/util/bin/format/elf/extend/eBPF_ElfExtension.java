@@ -20,16 +20,36 @@ import ghidra.program.model.lang.*;
 import ghidra.util.exception.*;
 import ghidra.util.task.TaskMonitor;
 
+/**
+ * eBPF ELF extension with Solana SBF support.
+ *
+ * Handles both standard eBPF (EM_BPF = 0xF7 = 247) and
+ * Solana SBF (EM_SBF = 0x107 = 263) machine types.
+ * Solana's LLVM backend emits EM_SBF for SBF v2 binaries.
+ */
 public class eBPF_ElfExtension extends ElfExtension {
+
+    /** Solana SBF machine type (not yet in ElfConstants) */
+    private static final short EM_SBF = 263;
+
+    /**
+     * Check if this is an eBPF or Solana SBF ELF.
+     */
+    private static boolean isBpfMachine(ElfHeader elf) {
+        short machine = elf.e_machine();
+        return (machine == ElfConstants.EM_BPF || machine == EM_SBF) && elf.is64Bit();
+    }
+
     @Override
     public boolean canHandle(ElfHeader elf) {
-        return elf.e_machine() == ElfConstants.EM_BPF && elf.is64Bit();
+        return isBpfMachine(elf);
     }
 
     @Override
     public boolean canHandle(ElfLoadHelper elfLoadHelper) {
         Language language = elfLoadHelper.getProgram().getLanguage();
-        return canHandle(elfLoadHelper.getElfHeader()) && "eBPF".equals(language.getProcessor().toString()) &&
+        return canHandle(elfLoadHelper.getElfHeader()) &&
+            "eBPF".equals(language.getProcessor().toString()) &&
             language.getLanguageDescription().getSize() == 64;
     }
 

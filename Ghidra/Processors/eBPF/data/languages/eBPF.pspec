@@ -1,73 +1,80 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <processor_spec>
-    <programcounter register="PC"/>	 
+    <programcounter register="PC"/>
     <default_symbols>
-            <symbol name="bpf_unspec" address="syscall:0x0"/>
-            <symbol name="bpf_map_lookup_elem" address="syscall:0x1"/>
-            <symbol name="bpf_map_update_elem" address="syscall:0x2"/>
-            <symbol name="bpf_map_delete_elem" address="syscall:0x3"/>
-            <symbol name="bpf_probe_read" address="syscall:0x4"/>
-            <symbol name="bpf_ktime_get_ns" address="syscall:0x5"/>
-            <symbol name="bpf_trace_printk" address="syscall:0x6"/>
-            <symbol name="bpf_get_prandom_u32" address="syscall:0x7"/>
-            <symbol name="bpf_get_smp_processor_id" address="syscall:0x8"/>
-            <symbol name="bpf_skb_store_bytes" address="syscall:0x9"/>
-            <symbol name="bpf_l3_csum_replace" address="syscall:0xa"/>
-            <symbol name="bpf_l4_csum_replace" address="syscall:0xb"/>
-            <symbol name="bpf_tail_call" address="syscall:0xc"/>
-            <symbol name="bpf_clone_redirect" address="syscall:0xd"/>
-            <symbol name="bpf_get_current_pid_tgid" address="syscall:0xe"/>
-            <symbol name="bpf_get_current_uid_gid" address="syscall:0xf"/>
-            <symbol name="bpf_get_current_comm" address="syscall:0x10"/>
-            <symbol name="bpf_get_cgroup_classid" address="syscall:0x11"/>
-            <symbol name="bpf_skb_vlan_push" address="syscall:0x12"/>
-            <symbol name="bpf_skb_vlan_pop" address="syscall:0x13"/>
-            <symbol name="bpf_skb_get_tunnel_key" address="syscall:0x14"/>
-            <symbol name="bpf_skb_set_tunnel_key" address="syscall:0x15"/>
-            <symbol name="bpf_perf_event_read" address="syscall:0x16"/>
-            <symbol name="bpf_redirect" address="syscall:0x17"/>
-            <symbol name="bpf_get_route_realm" address="syscall:0x18"/>
-            <symbol name="bpf_perf_event_output" address="syscall:0x19"/>
-            <symbol name="bpf_skb_load_bytes" address="syscall:0x1a"/>
-            <symbol name="bpf_get_stackid" address="syscall:0x1b"/>	
-            <symbol name="bpf_csum_diff" address="syscall:0x1c"/>
-            <symbol name="bpf_skb_get_tunnel_opt" address="syscall:0x1d"/>
-            <symbol name="bpf_skb_set_tunnel_opt" address="syscall:0x1e"/>
-            <symbol name="bpf_skb_change_proto" address="syscall:0x1f"/>
-            <symbol name="bpf_skb_change_type" address="syscall:0x20"/>
-            <symbol name="bpf_skb_under_cgroup" address="syscall:0x21"/>
-            <symbol name="bpf_get_hash_recalc" address="syscall:0x22"/>
-            <symbol name="bpf_get_current_task" address="syscall:0x23"/>
-            <symbol name="bpf_probe_write_user" address="syscall:0x24"/>
-            <symbol name="bpf_current_task_under_cgroup" address="syscall:0x25"/>
-            <symbol name="bpf_skb_change_tail" address="syscall:0x26"/>
-            <symbol name="bpf_skb_pull_data" address="syscall:0x27"/>
-            <symbol name="bpf_csum_update" address="syscall:0x28"/>
-            <symbol name="bpf_set_hash_invalid" address="syscall:0x29"/>
-            <symbol name="bpf_get_numa_node_id" address="syscall:0x2a"/>
-            <symbol name="bpf_skb_change_head" address="syscall:0x2b"/>
-            <symbol name="bpf_xdp_adjust_head" address="syscall:0x2c"/>
-            <symbol name="bpf_probe_read_str" address="syscall:0x2d"/>
-            <symbol name="bpf_get_socket_cookie" address="syscall:0x2e"/>
-            <symbol name="bpf_get_socket_cookie" address="syscall:0x2f"/>
-            <symbol name="bpf_get_socket_cookie" address="syscall:0x30"/>
-            <symbol name="bpf_get_socket_uid" address="syscall:0x31"/>
-            <symbol name="bpf_set_hash" address="syscall:0x32"/>
-            <symbol name="bpf_setsockopt" address="syscall:0x33"/>
-            <symbol name="bpf_skb_adjust_room" address="syscall:0x34"/>
-            <symbol name="bpf_redirect_map" address="syscall:0x35"/>
-            <symbol name="bpf_sk_redirect_map" address="syscall:0x36"/>
-            <symbol name="bpf_sock_map_update" address="syscall:0x37"/>
-            <symbol name="bpf_xdp_adjust_meta" address="syscall:0x38"/>
-            <symbol name="bpf_perf_event_read_value" address="syscall:0x39"/>
-            <symbol name="bpf_perf_prog_read_value" address="syscall:0x3a"/>
-            <symbol name="bpf_getsockopt" address="syscall:0x3b"/>
-            <symbol name="bpf_override_return" address="syscall:0x3c"/>
-            <symbol name="bpf_sock_ops_cb_flags_set" address="syscall:0x3d"/>
-            <symbol name="bpf_msg_redirect_map" address="syscall:0x3e"/>
-            <symbol name="bpf_msg_apply_bytes" address="syscall:0x3f"/>	
+            <!-- Solana SBF syscalls (murmur3_32 hashes, seed=0) -->
+            <!-- Reference: agave/syscalls/src/lib.rs, agave/platform-tools-sdk/gen-headers/src/main.rs -->
+
+            <!-- Core runtime -->
+            <symbol name="abort" address="syscall:0xb6fc1a11"/>
+            <symbol name="sol_panic_" address="syscall:0x686093bb"/>
+
+            <!-- Logging -->
+            <symbol name="sol_log_" address="syscall:0x207559bd"/>
+            <symbol name="sol_log_64_" address="syscall:0x5c2a3178"/>
+            <symbol name="sol_log_pubkey" address="syscall:0x7ef088ca"/>
+            <symbol name="sol_log_compute_units_" address="syscall:0x52ba5096"/>
+            <symbol name="sol_log_data" address="syscall:0x7317b434"/>
+
+            <!-- CPI (Cross-Program Invocation) -->
+            <symbol name="sol_invoke_signed_c" address="syscall:0xa22b9c85"/>
+            <symbol name="sol_invoke_signed_rust" address="syscall:0xd7449092"/>
+
+            <!-- Memory operations -->
+            <symbol name="sol_memcpy_" address="syscall:0x717cc4a3"/>
+            <symbol name="sol_memmove_" address="syscall:0x434371f8"/>
+            <symbol name="sol_memset_" address="syscall:0x3770fb22"/>
+            <symbol name="sol_memcmp_" address="syscall:0x5fdcde31"/>
+
+            <!-- Cryptographic hashing -->
+            <symbol name="sol_sha256" address="syscall:0x11f49d86"/>
+            <symbol name="sol_keccak256" address="syscall:0xd7793abb"/>
+            <symbol name="sol_secp256k1_recover" address="syscall:0x17e40350"/>
+            <symbol name="sol_blake3" address="syscall:0x174c5122"/>
+            <symbol name="sol_poseidon" address="syscall:0xc4947c21"/>
+
+            <!-- PDA (Program Derived Address) -->
+            <symbol name="sol_create_program_address" address="syscall:0x9377323c"/>
+            <symbol name="sol_try_find_program_address" address="syscall:0x48504a38"/>
+
+            <!-- Sysvar access -->
+            <symbol name="sol_get_clock_sysvar" address="syscall:0xd56b5fe9"/>
+            <symbol name="sol_get_rent_sysvar" address="syscall:0xbf7188f6"/>
+            <symbol name="sol_get_epoch_schedule_sysvar" address="syscall:0x23a29a61"/>
+            <symbol name="sol_get_fees_sysvar" address="syscall:0x3b97b73c"/>
+            <symbol name="sol_get_epoch_rewards_sysvar" address="syscall:0xfdba2b3b"/>
+            <symbol name="sol_get_last_restart_slot" address="syscall:0x188a0031"/>
+            <symbol name="sol_get_sysvar" address="syscall:0x13c1b505"/>
+
+            <!-- Program state -->
+            <symbol name="sol_get_stack_height" address="syscall:0x85532d94"/>
+            <symbol name="sol_set_return_data" address="syscall:0xa226d3eb"/>
+            <symbol name="sol_get_return_data" address="syscall:0x5d2245e4"/>
+            <symbol name="sol_get_processed_sibling_instruction" address="syscall:0xadb8efc8"/>
+            <symbol name="sol_remaining_compute_units" address="syscall:0xedef5aee"/>
+
+            <!-- Curve25519 and BLS12-381 operations -->
+            <symbol name="sol_curve_validate_point" address="syscall:0xaa2607ca"/>
+            <symbol name="sol_curve_group_op" address="syscall:0xdd1c41a6"/>
+            <symbol name="sol_curve_multiscalar_mul" address="syscall:0x60a40880"/>
+            <symbol name="sol_curve_decompress" address="syscall:0x080c98b0"/>
+            <symbol name="sol_curve_pairing_map" address="syscall:0xf111a47e"/>
+
+            <!-- Alt_bn128 elliptic curve -->
+            <symbol name="sol_alt_bn128_group_op" address="syscall:0xae0c318b"/>
+            <symbol name="sol_alt_bn128_compression" address="syscall:0x334fd5ed"/>
+
+            <!-- Big modular exponentiation -->
+            <symbol name="sol_big_mod_exp" address="syscall:0x780e4c15"/>
+
+            <!-- Epoch stake -->
+            <symbol name="sol_get_epoch_stake" address="syscall:0x5be92f4a"/>
+
+            <!-- Memory allocator (deprecated) -->
+            <symbol name="sol_alloc_free_" address="syscall:0x83f00e8f"/>
     </default_symbols>
     <default_memory_blocks>
-        <memory_block name="eBPFHelper_functions" start_address="syscall:0" length="0x400" initialized="true"/>    
+        <!-- Syscall address space covers full murmur3 32-bit hash range -->
+        <memory_block name="Solana_syscalls" start_address="syscall:0" length="0xFFFFFFFF" initialized="true"/>
     </default_memory_blocks>
 </processor_spec>
