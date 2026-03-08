@@ -74,7 +74,7 @@
             <symbol name="sol_alloc_free_" address="syscall:0x83f00e8f"/>
     </default_symbols>
     <default_memory_blocks>
-        <!-- Syscall address space covers full murmur3 32-bit hash range -->
-        <memory_block name="Solana_syscalls" start_address="syscall:0" length="0xFFFFFFFF" initialized="true"/>
+        <memory_block name="Solana_syscalls_low" start_address="syscall:0x00000000" length="0x7fffffff" initialized="false"/>
+        <memory_block name="Solana_syscalls_high" start_address="syscall:0x80000000" length="0x7fffffff" initialized="false"/>
     </default_memory_blocks>
 </processor_spec>

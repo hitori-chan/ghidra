@@ -248,6 +248,29 @@ public class SolanaSyscallAnalyzer extends AbstractAnalyzer {
 			}
 		}
 
+		// Strategy 3: Identify the entrypoint function and type it
+		SymbolIterator syms = program.getSymbolTable().getSymbols("entrypoint");
+		while (syms.hasNext()) {
+			Symbol sym = syms.next();
+			Function func = program.getFunctionManager().getFunctionAt(sym.getAddress());
+			if (func != null) {
+				try {
+					// uint64_t entrypoint(uint8_t *input)
+					func.setReturnType(ghidra.program.model.data.UnsignedLongLongDataType.dataType, SourceType.ANALYSIS);
+					ghidra.program.model.listing.ParameterImpl param = new ghidra.program.model.listing.ParameterImpl(
+						"input", new ghidra.program.model.data.PointerDataType(ghidra.program.model.data.UnsignedCharDataType.dataType), program);
+					func.replaceParameters(
+						java.util.Arrays.asList(param), 
+						ghidra.program.model.listing.Function.FunctionUpdateType.DYNAMIC_STORAGE_ALL_PARAMS, 
+						true, SourceType.ANALYSIS);
+				} catch (Exception e) {
+					if (log != null) {
+						log.appendMsg("Could not apply signature to entrypoint: " + e.getMessage());
+					}
+				}
+			}
+		}
+
 		if (log != null) {
 			log.appendMsg("Identified " + analyzed + " Solana syscalls");
 		}
