@@ -69,6 +69,7 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
         identifySysvarPointers(program, monitor, log);
         annotatePanicLocations(program, monitor, log);
         identifyDiscriminatorsAndHandlers(program, monitor, log);
+        identifyHandlerImplementationCallees(program, monitor, log);
         
         SolanaPayloadAnalyzer.analyze(program, monitor, log);
         identifyAsyncStateMachines(program, monitor, log);
@@ -364,6 +365,12 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
 
             if (lamportsWrites > 0) {
                 sb.append("  Lamports: ").append(lamportsWrites).append(" write(s) detected\n");
+                if (signerChecks == 0) {
+                    sb.append("  WARNING: privileged lamport mutation without local signer check evidence\n");
+                }
+                if (ownerChecks == 0 && ownerFieldReads == 0) {
+                    sb.append("  WARNING: privileged lamport mutation without local owner/authority validation evidence\n");
+                }
             }
 
             if (dataLenWrites > 0) {
@@ -514,9 +521,12 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
     }
 
     private void analyzeDispatcher(Program program, Function pi, MessageLog log) {
-        // Strategy: Solana dispatch uses jeq/jne to compare the first byte of
-        // instruction_data against discriminator constants, then jumps to handler code
-        // that calls the handler function. We need to:
+        // Strategy: Solana dispatch often routes through small case IDs even for
+        // Anchor programs that originally use 8-byte discriminators. The case ID
+        // is still useful for naming/role recovery, but should be treated as a
+        // synthetic dispatch label rather than the raw on-wire discriminator.
+        //
+        // We need to:
         // 1. Collect discriminator values from jeq/jne comparisons
         // 2. Follow the branch targets to find the actual handler calls
         //
@@ -536,8 +546,9 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
                     Scalar s = inst.getScalar(i);
                     if (s != null) {
                         long val = s.getUnsignedValue();
-                        // Discriminators are typically 0-255 (single byte) or Anchor 8-byte hashes
-                        if (val > 0 && val <= 0xFF) {
+                        // Preserve wider values too. Some dispatchers compare
+                        // internal case IDs, others compare larger values.
+                        if (val > 0) {
                             discVal = val;
                         }
                     }
@@ -569,9 +580,17 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
                     if (target != null && target.isMemoryAddress()) {
                         Function f = program.getFunctionManager().getFunctionAt(target);
                         if (f != null && f.getName().startsWith("FUN_") && !f.isThunk()) {
-                            String suffix = String.valueOf(disc);
+                            String suffix = Long.toUnsignedString(disc);
                             renameAndTypeAs(f, "handler_disc_" + suffix, "process_instruction", log);
-                            inst.setComment(CodeUnit.EOL_COMMENT, "Instruction Handler for discriminator " + suffix);
+                            inst.setComment(CodeUnit.EOL_COMMENT,
+                                "Instruction Handler for synthetic dispatch case " + suffix);
+                            appendFunctionComment(
+                                f,
+                                "[DISPATCH ROLE]\n"
+                                    + "  Synthetic dispatcher case: " + formatDispatchLabel(disc) + "\n"
+                                    + "  Source dispatcher: " + pi.getName() + "\n"
+                                    + "  NOTE: This may be an internal control-flow label, not the raw instruction bytes."
+                            );
                         }
                     }
                     break;
@@ -581,6 +600,46 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
             }
         }
 
+    }
+
+    private void identifyHandlerImplementationCallees(Program program, TaskMonitor monitor, MessageLog log)
+            throws CancelledException {
+        int renamed = 0;
+        for (Function f : program.getFunctionManager().getFunctions(true)) {
+            monitor.checkCancelled();
+            String handlerName = f.getName();
+            if (!handlerName.startsWith("handler_disc_")) continue;
+            if (f.getBody().getNumAddresses() > 192) continue;
+
+            int ordinal = 0;
+            for (Function called : f.getCalledFunctions(monitor)) {
+                monitor.checkCancelled();
+                if (called == null || called.isThunk()) continue;
+                if (!called.getName().startsWith("FUN_")) continue;
+                if (called.getBody().getNumAddresses() < 160) continue;
+
+                String newName = "handler_impl_" + handlerName.substring("handler_disc_".length());
+                if (ordinal > 0) {
+                    newName = newName + "_" + ordinal;
+                }
+                ordinal++;
+
+                try {
+                    called.setName(newName, SourceType.ANALYSIS);
+                    String existing = called.getComment();
+                    String note = "[HANDLER ROLE]\n  Business-logic callee reached from " + handlerName + "\n";
+                    if (existing == null || !existing.contains("Business-logic callee reached from")) {
+                        called.setComment((existing != null ? existing + "\n" : "") + note);
+                    }
+                    renamed++;
+                } catch (Exception e) {
+                    Msg.error(this, "Error naming handler implementation at " + called.getEntryPoint(), e);
+                }
+            }
+        }
+        if (renamed > 0 && log != null) {
+            log.appendMsg("Identified " + renamed + " handler implementation callees");
+        }
     }
 
     private int identifyVTables(Program program, TaskMonitor monitor, MessageLog log) throws CancelledException {
@@ -906,6 +965,17 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
 
     private void renameAndType(Function f, String newName, MessageLog log) {
         renameAndTypeAs(f, newName, newName, log);
+    }
+
+    private String formatDispatchLabel(long disc) {
+        return Long.toUnsignedString(disc) + " (0x" + Long.toUnsignedString(disc, 16) + ")";
+    }
+
+    private void appendFunctionComment(Function f, String extra) {
+        if (extra == null || extra.isEmpty()) return;
+        String existing = f.getComment();
+        if (existing != null && existing.contains(extra)) return;
+        f.setComment((existing == null || existing.isEmpty()) ? extra : existing + "\n" + extra);
     }
 
     private void renameAndTypeAs(Function f, String newName, String typeName, MessageLog log) {

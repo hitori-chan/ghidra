@@ -34,6 +34,9 @@ import java.util.TreeMap;
  */
 public class SolanaPayloadAnalyzer {
 
+    private static final int ACCOUNT_STRIDE = 0x50;
+    private static final int[] ACCOUNT_FIELD_OFFSETS = {0x00, 0x01, 0x02, 0x03, 0x08, 0x28, 0x48, 0x50};
+
     public static void analyze(Program program, TaskMonitor monitor, MessageLog log) throws CancelledException {
         DataTypeManager dtm = program.getDataTypeManager();
         int borshCount = 0;
@@ -42,12 +45,14 @@ public class SolanaPayloadAnalyzer {
         for (Function f : program.getFunctionManager().getFunctions(true)) {
             monitor.checkCancelled();
             
-            // Borsh Instruction Data Recovery — handlers and large unnamed functions
+            // Borsh Instruction Data Recovery — named handlers and their implementation callees
             String fname = f.getName();
             boolean isBorshCandidate = fname.startsWith("handler_disc_")
+                || fname.startsWith("handler_impl_")
                 || fname.equals("process_instruction")
-                || ((fname.startsWith("FUN_") || fname.startsWith("async_poll_"))
-                    && f.getBody().getNumAddresses() > 200);
+                || (fname.startsWith("FUN_")
+                    && f.getBody().getNumAddresses() > 200
+                    && isLikelyHandlerCallee(f, monitor));
             if (isBorshCandidate) {
                 Structure borshStruct = recoverBorshStruct(f, dtm);
                 if (borshStruct != null) {
@@ -72,6 +77,9 @@ public class SolanaPayloadAnalyzer {
         Program program = f.getProgram();
         TreeMap<Integer, Integer> offsets = new TreeMap<>();
         Map<Integer, String> semanticNames = new HashMap<>();
+        int instructionLikeReads = 0;
+        int accountMetadataReads = 0;
+        boolean hasAnchorDisc = false;
         
         InstructionIterator iter = program.getListing().getInstructions(f.getBody(), true);
         while (iter.hasNext()) {
@@ -84,8 +92,17 @@ public class SolanaPayloadAnalyzer {
                 if (ops.length >= 1 && ops[0] instanceof ghidra.program.model.scalar.Scalar) {
                     int offset = (int)((ghidra.program.model.scalar.Scalar)ops[0]).getSignedValue();
                     if (offset >= 0 && offset < 2048) {
+                        if (looksLikeAccountMetadataOffset(offset)) {
+                            accountMetadataReads++;
+                            continue;
+                        }
+
                         int size = getWidth(mnem);
                         offsets.put(offset, size);
+                        instructionLikeReads++;
+                        if (offset == 0 && size == 8) {
+                            hasAnchorDisc = true;
+                        }
                         
                         // Semantic usage tracking
                         String usage = inferUsage(inst);
@@ -96,13 +113,23 @@ public class SolanaPayloadAnalyzer {
         }
 
         if (offsets.size() < 2) return null;
+        if (instructionLikeReads == 0) return null;
+        if (accountMetadataReads > instructionLikeReads * 2) return null;
 
         String name = "BorshPayload_" + f.getName();
         int totalSize = offsets.lastKey() + offsets.get(offsets.lastKey());
         StructureDataType struct = new StructureDataType(name, totalSize);
+
+        if (hasAnchorDisc) {
+            try {
+                struct.replaceAtOffset(0, UnsignedLongLongDataType.dataType, 8,
+                    "anchor_discriminator", "8-byte Anchor instruction discriminator");
+            } catch (Exception e) {}
+        }
         
         for (Map.Entry<Integer, Integer> entry : offsets.entrySet()) {
             int off = entry.getKey();
+            if (off == 0 && hasAnchorDisc) continue;
             int sz = entry.getValue();
             String fieldName = semanticNames.getOrDefault(off, "field_" + off);
             try {
@@ -112,6 +139,25 @@ public class SolanaPayloadAnalyzer {
 
         DataType added = dtm.addDataType(struct, null);
         return (added instanceof Structure) ? (Structure) added : null;
+    }
+
+    private static boolean looksLikeAccountMetadataOffset(int offset) {
+        if (offset < 0) return false;
+        int remainder = offset % ACCOUNT_STRIDE;
+        for (int candidate : ACCOUNT_FIELD_OFFSETS) {
+            if (remainder == candidate) return true;
+        }
+        return false;
+    }
+
+    private static boolean isLikelyHandlerCallee(Function f, TaskMonitor monitor) throws CancelledException {
+        for (Function caller : f.getCallingFunctions(monitor)) {
+            String callerName = caller.getName();
+            if (callerName.startsWith("handler_disc_") || callerName.equals("process_instruction")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String inferUsage(Instruction inst) {
