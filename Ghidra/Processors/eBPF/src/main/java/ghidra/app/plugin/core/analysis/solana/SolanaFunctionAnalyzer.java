@@ -31,7 +31,6 @@ import ghidra.util.task.TaskMonitor;
 import ghidra.util.Msg;
 
 import java.util.Set;
-import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -74,9 +73,6 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
         SolanaPayloadAnalyzer.analyze(program, monitor, log);
         identifyAsyncStateMachines(program, monitor, log);
 
-        // Security Analysis Passes
-        annotateSecurityChecks(program, monitor, log);
-
         // Final Polish Passes
         foldRefCellNoise(program, monitor, log);
         propagateStructureTypes(program, monitor, log);
@@ -86,303 +82,6 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
         }
 
         return true;
-    }
-
-    // =========================================================================
-    // Security Check Annotation Engine
-    // =========================================================================
-
-    /**
-     * Annotates security-relevant patterns in all functions.
-     *
-     * For each function that accesses accounts (via RustAccountInfo or SolAccountInfo offsets),
-     * detects:
-     * - Signer checks (reading is_signer field + conditional branch)
-     * - Owner checks (sol_memcmp_ on owner field + conditional branch)
-     * - PDA validation (sol_try_find_program_address + comparison)
-     * - Lamports mutations (writes to lamports field)
-     * - CPI calls (sol_invoke_signed_c/rust) and whether program_id is validated
-     *
-     * Results are added as plate comments on the function, making them immediately
-     * visible in decompiled output for the LLM investigator.
-     */
-    private void annotateSecurityChecks(Program program, TaskMonitor monitor, MessageLog log) throws CancelledException {
-        int annotated = 0;
-
-        for (Function f : program.getFunctionManager().getFunctions(true)) {
-            monitor.checkCancelled();
-            if (f.isThunk() || f.getBody().getNumAddresses() < 16) continue;
-
-            SecurityProfile profile = analyzeSecurityProfile(program, f, monitor);
-            if (profile.isEmpty()) continue;
-
-            String annotation = profile.toAnnotation();
-            if (annotation != null && !annotation.isEmpty()) {
-                String existing = f.getComment();
-                if (existing != null && existing.contains("SECURITY")) continue; // already annotated
-                String combined = (existing != null ? existing + "\n" : "") + annotation;
-                f.setComment(combined);
-                annotated++;
-            }
-        }
-
-        if (log != null && annotated > 0) {
-            log.appendMsg("Solana Security: Annotated " + annotated + " functions with security profiles");
-        }
-    }
-
-    /**
-     * Analyzes a single function for security-relevant patterns.
-     */
-    private SecurityProfile analyzeSecurityProfile(Program program, Function f, TaskMonitor monitor) throws CancelledException {
-        SecurityProfile profile = new SecurityProfile();
-        Set<Function> calledFunctions = f.getCalledFunctions(monitor);
-
-        // Collect called function names for quick lookup
-        Set<String> calledNames = new HashSet<>();
-        for (Function called : calledFunctions) {
-            calledNames.add(called.getName());
-        }
-
-        // Track CPI presence
-        if (calledNames.contains("sol_invoke_signed_c") || calledNames.contains("sol_invoke_signed_rust") ||
-            calledNames.contains("sol_lib_invoke") || calledNames.contains("sol_lib_invoke_signed")) {
-            profile.hasCPI = true;
-        }
-
-        // Track PDA operations
-        if (calledNames.contains("sol_create_program_address") || calledNames.contains("sol_try_find_program_address")) {
-            profile.hasPDADerivation = true;
-        }
-
-        // Track sysvar access
-        if (calledNames.contains("sol_get_clock_sysvar") || calledNames.contains("sol_lib_get_clock")) {
-            profile.accessesClock = true;
-        }
-
-        // Scan instructions for field-level access patterns
-        InstructionIterator iter = program.getListing().getInstructions(f.getBody(), true);
-
-        while (iter.hasNext()) {
-            Instruction inst = iter.next();
-            String mnem = inst.getMnemonicString().toLowerCase();
-
-            // Check for sol_memcmp_ calls (owner check pattern)
-            if (mnem.startsWith("call")) {
-                Address target = getCallTarget(inst);
-                if (target != null) {
-                    Function called = program.getFunctionManager().getFunctionAt(target);
-                    if (called != null) {
-                        if (called.getName().equals("sol_memcmp_")) {
-                            if (isNearOwnerFieldAccess(program, inst, 15)) {
-                                profile.ownerChecks++;
-                                inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: owner comparison (sol_memcmp_)");
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Detect account field access patterns via load instructions
-            // LDX has 3 operands: op[0]=dst_reg, op[1]=base_reg, op[2]=offset_scalar
-            if (mnem.startsWith("ldx") && inst.getNumOperands() >= 3) {
-                Object[] ops2 = inst.getOpObjects(2);
-                if (ops2.length >= 1 && ops2[0] instanceof Scalar) {
-                    long offset = ((Scalar) ops2[0]).getSignedValue();
-                    int width = SolanaPayloadAnalyzer.getWidth(mnem);
-
-                    // ── RustAccountInfo offsets (48-byte struct) ──
-                    // Disambiguate from serialized buffer: Rust boolean fields are
-                    // always 1-byte loads (LDXB). Offset 40 with a wider load is NOT
-                    // is_signer — it's likely a serialized buffer owner access (0x28=40).
-                    if (offset == 40 && width == 1) {  // LDXB only — Rust is_signer
-                        profile.signerFieldReads++;
-                        if (isFollowedByConditionalBranch(inst, 4)) {
-                            profile.signerChecks++;
-                            inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: is_signer check (RustAccountInfo+0x28)");
-                        } else {
-                            inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: is_signer read (NO branch follows!)");
-                        }
-                    }
-                    else if (offset == 41 && width == 1) {  // LDXB — Rust is_writable
-                        profile.writableFieldReads++;
-                        if (isFollowedByConditionalBranch(inst, 4)) {
-                            profile.writableChecks++;
-                            inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: is_writable check (RustAccountInfo+0x29)");
-                        }
-                    }
-
-                    // ── Owner pointer loads ──
-                    // RustAccountInfo +24 = owner_ptr (8-byte pointer load)
-                    if (offset == 24 && width == 8) {
-                        profile.ownerFieldReads++;
-                        inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: owner_ptr load (RustAccountInfo+0x18)");
-                    }
-
-                    // ── Serialized buffer offsets (C ABI) ──
-                    // is_signer at +0x01, is_writable at +0x02 — always byte loads
-                    if (offset == 0x01 && width == 1) {
-                        profile.signerFieldReads++;
-                        if (isFollowedByConditionalBranch(inst, 4)) {
-                            profile.signerChecks++;
-                            inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: is_signer check (serialized +0x01)");
-                        }
-                    }
-                    else if (offset == 0x02 && width == 1) {
-                        profile.writableFieldReads++;
-                        if (isFollowedByConditionalBranch(inst, 4)) {
-                            profile.writableChecks++;
-                            inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: is_writable check (serialized +0x02)");
-                        }
-                    }
-                }
-            }
-
-            // Detect lamports and data_len writes
-            // STX has 3 operands: op[0]=base_reg, op[1]=offset_scalar, op[2]=src_reg
-            if (mnem.startsWith("stx") && inst.getNumOperands() >= 3) {
-                Object[] stxOps1 = inst.getOpObjects(1);
-                if (stxOps1.length >= 1 && stxOps1[0] instanceof Scalar) {
-                    long offset = ((Scalar) stxOps1[0]).getSignedValue();
-                    if (offset == 0x48) {
-                        profile.lamportsWrites++;
-                        inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: lamports write (serialized +0x48)");
-                    } else if (offset == 0x50) {
-                        profile.dataLenWrites++;
-                        inst.setComment(CodeUnit.EOL_COMMENT, "SECURITY: data_len write (serialized +0x50)");
-                    }
-                }
-            }
-        }
-
-        return profile;
-    }
-
-    /**
-     * Checks if an instruction is followed by a conditional branch within N instructions.
-     * Stops scanning at EXIT or CALL boundaries.
-     */
-    private boolean isFollowedByConditionalBranch(Instruction inst, int lookahead) {
-        Instruction next = inst.getNext();
-        for (int i = 0; i < lookahead && next != null; i++) {
-            String mnem = next.getMnemonicString().toLowerCase();
-            if (mnem.startsWith("j") && !mnem.equals("ja") && !mnem.equals("jmp")) {
-                return true;
-            }
-            if (mnem.equals("exit") || mnem.startsWith("call")) break;
-            next = next.getNext();
-        }
-        return false;
-    }
-
-    /**
-     * Checks if a sol_memcmp_ call is near a load from the owner field offset.
-     * Looks back up to `lookback` instructions for owner-related offsets.
-     */
-    private boolean isNearOwnerFieldAccess(Program program, Instruction callInst, int lookback) {
-        Instruction prev = callInst.getPrevious();
-        for (int i = 0; i < lookback && prev != null; i++) {
-            String mnem = prev.getMnemonicString().toLowerCase();
-            if (mnem.startsWith("ldx") && prev.getNumOperands() >= 3) {
-                // LDX: op[2] = offset scalar
-                Object[] ops = prev.getOpObjects(2);
-                if (ops.length >= 1 && ops[0] instanceof Scalar) {
-                    long offset = ((Scalar) ops[0]).getSignedValue();
-                    if (offset == 24 || offset == 0x28) return true;
-                }
-            } else if (mnem.startsWith("add")) {
-                // ADD: op[1] = immediate scalar
-                Object[] ops = prev.getOpObjects(1);
-                if (ops.length >= 1 && ops[0] instanceof Scalar) {
-                    long offset = ((Scalar) ops[0]).getSignedValue();
-                    if (offset == 24 || offset == 0x28) return true;
-                }
-            }
-            prev = prev.getPrevious();
-        }
-        return false;
-    }
-
-    /**
-     * Security profile for a single function. Tracks what security checks are present/absent.
-     */
-    private static class SecurityProfile {
-        int signerFieldReads = 0;
-        int signerChecks = 0;
-        int ownerChecks = 0;
-        int ownerFieldReads = 0;
-        int writableFieldReads = 0;
-        int writableChecks = 0;
-        int lamportsWrites = 0;
-        int dataLenWrites = 0;
-        boolean hasCPI = false;
-        boolean hasPDADerivation = false;
-        boolean accessesClock = false;
-
-        boolean isEmpty() {
-            return signerFieldReads == 0 && ownerChecks == 0 && ownerFieldReads == 0
-                && writableFieldReads == 0 && lamportsWrites == 0 && dataLenWrites == 0
-                && !hasCPI && !hasPDADerivation;
-        }
-
-        String toAnnotation() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("[SECURITY PROFILE]\n");
-
-            if (hasCPI) {
-                sb.append("  CPI: YES (cross-program invocation present)\n");
-                if (ownerChecks == 0 && ownerFieldReads == 0) {
-                    sb.append("  WARNING: CPI without owner validation detected\n");
-                }
-            }
-
-            if (hasPDADerivation) {
-                sb.append("  PDA: YES (program derived address computation)\n");
-            }
-
-            if (signerFieldReads > 0) {
-                sb.append("  Signer: ").append(signerChecks).append(" check(s) from ")
-                    .append(signerFieldReads).append(" read(s)\n");
-                if (signerChecks < signerFieldReads) {
-                    sb.append("  WARNING: is_signer read without branch — possible missing signer check\n");
-                }
-            } else if (hasCPI || lamportsWrites > 0) {
-                sb.append("  WARNING: No is_signer reads in function that modifies state\n");
-            }
-
-            if (writableFieldReads > 0) {
-                sb.append("  Writable: ").append(writableChecks).append(" check(s) from ")
-                    .append(writableFieldReads).append(" read(s)\n");
-            }
-
-            if (ownerChecks > 0) {
-                sb.append("  Owner: ").append(ownerChecks).append(" validation(s) via sol_memcmp_\n");
-            } else if (ownerFieldReads > 0) {
-                sb.append("  Owner: ").append(ownerFieldReads).append(" field read(s), no memcmp validation\n");
-            } else if (hasCPI) {
-                sb.append("  WARNING: No owner validation in function with CPI\n");
-            }
-
-            if (lamportsWrites > 0) {
-                sb.append("  Lamports: ").append(lamportsWrites).append(" write(s) detected\n");
-                if (signerChecks == 0) {
-                    sb.append("  WARNING: privileged lamport mutation without local signer check evidence\n");
-                }
-                if (ownerChecks == 0 && ownerFieldReads == 0) {
-                    sb.append("  WARNING: privileged lamport mutation without local owner/authority validation evidence\n");
-                }
-            }
-
-            if (dataLenWrites > 0) {
-                sb.append("  DataLen: ").append(dataLenWrites).append(" write(s) detected\n");
-            }
-
-            if (accessesClock) {
-                sb.append("  Sysvar: Clock access present\n");
-            }
-
-            return sb.toString();
-        }
     }
 
     /**
@@ -511,7 +210,12 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
                 break;
             }
         }
-        if (entry != null) analyzeDispatcher(program, entry, log);
+        // Do NOT analyze `entrypoint` as a dispatcher: it is macro boilerplate
+        // (deserialize -> call -> Rc-drop), and its `if (refcount == 0)` drop checks
+        // compile to `jeq R, 0x0`, which the discriminator scan misreads as
+        // "dispatch case 0" and mislabels the drop/free callee as handler_disc_0
+        // (force-typing it as process_instruction). The real `match instruction_data[0]`
+        // dispatch lives in process_instruction (the renamed deserialize callee).
         for (Symbol sym : program.getSymbolTable().getSymbols("process_instruction")) {
             if (sym.getSymbolType() == ghidra.program.model.symbol.SymbolType.FUNCTION) {
                 Function pi = program.getFunctionManager().getFunctionAt(sym.getAddress());
@@ -532,39 +236,83 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
         //
         // We also handle the simpler case where a mov/comparison + call happens linearly.
 
-        Map<Long, Address> discToTarget = new HashMap<>();
-
-        // Pass 1: Collect discriminator-to-jump-target mappings from conditional branches
+        // Pass 1: bucket (caseValue -> branchTarget) by the COMPARED REGISTER. Only the
+        // register holding the discriminator byte drives the real dispatch; the function
+        // is also full of unrelated `jeq R, 0`-style guards (account-count checks, null /
+        // zero / RefCell-borrow tests) on other registers. Mixing those in fabricates
+        // phantom handlers — most often a `handler_disc_0` that is really a memset/drop
+        // helper reached from some zero-check's target block.
+        Map<String, Map<Long, Address>> byReg = new HashMap<>();
+        Map<String, Address> firstSeen = new HashMap<>();
+        // Track `lddw Rx, CONST` so Anchor's 8-byte discriminator dispatch is recognized:
+        // Anchor loads each instruction's sha256-derived discriminator into a temp register
+        // and does `jeq/jne R_disc, Rtmp` (register-vs-register), which has no scalar operand
+        // to read. Resolving the temp register back to its loaded constant lets the same
+        // dispatch machinery name Anchor handlers, not just native byte-discriminator ones.
+        Map<String, Long> lddwVals = new HashMap<>();
         InstructionIterator iter = program.getListing().getInstructions(pi.getBody(), true);
         while (iter.hasNext()) {
             Instruction inst = iter.next();
             String mnem = inst.getMnemonicString().toLowerCase();
 
-            if (mnem.startsWith("jeq") || mnem.startsWith("jne")) {
-                long discVal = -1;
-                for (int i = 0; i < inst.getNumOperands(); i++) {
-                    Scalar s = inst.getScalar(i);
-                    if (s != null) {
-                        long val = s.getUnsignedValue();
-                        // Preserve wider values too. Some dispatchers compare
-                        // internal case IDs, others compare larger values.
-                        if (val > 0) {
-                            discVal = val;
-                        }
-                    }
+            if (mnem.startsWith("lddw")) {
+                String dst = registerOperand(inst, 0);
+                if (dst != null) {
+                    Long c = firstScalar(inst);
+                    if (c != null) lddwVals.put(dst, c);
                 }
-                if (discVal != -1) {
-                    // For jeq, the branch target is the handler block
-                    Address[] flows = inst.getFlows();
+                continue;
+            }
+
+            if (mnem.startsWith("jeq") || mnem.startsWith("jne")) {
+                String reg = getBranchCompareRegister(inst);     // operand 0 = discriminator reg
+                Long discVal = getBranchCompareImmediate(inst);  // operand 1 immediate (native dispatch)
+                if (discVal == null) {                           // operand 1 register -> Anchor lddw'd const
+                    String src = registerOperand(inst, 1);
+                    if (src != null) discVal = lddwVals.get(src);
+                }
+                if (reg != null && discVal != null) {
+                    // Map the case value to the block that runs when the discriminator MATCHES.
+                    // For `jeq R,V,T` that is the branch target T; for `jne R,V,T` the equal case
+                    // is the fall-through (T is the not-equal/skip path). Getting this backwards
+                    // mislabels skip/error blocks as handlers and misses the real ones.
                     Instruction nextInst = inst.getNext();
-                    for (Address flowTarget : flows) {
-                        if (nextInst == null || !flowTarget.equals(nextInst.getAddress())) {
-                            discToTarget.put(discVal, flowTarget);
+                    Address handlerAddr = null;
+                    if (mnem.startsWith("jeq")) {
+                        for (Address ft : inst.getFlows()) {
+                            if (nextInst == null || !ft.equals(nextInst.getAddress())) { handlerAddr = ft; break; }
                         }
+                    } else if (nextInst != null) {
+                        handlerAddr = nextInst.getAddress();
+                    }
+                    if (handlerAddr != null) {
+                        byReg.computeIfAbsent(reg, k -> new HashMap<>()).put(discVal, handlerAddr);
+                        firstSeen.putIfAbsent(reg, inst.getAddress());
                     }
                 }
             }
         }
+
+        // Pick the discriminator register: the one matched against the most distinct case
+        // values. Require at least two — a lone comparison is far more likely a zero/null
+        // guard than a dispatch, and mislabeling it is worse than leaving a (usually
+        // inlined) single handler unnamed. Ties break to the earliest comparison so the
+        // result is deterministic.
+        String dispatchReg = null;
+        int bestDistinct = 0;
+        Address bestAddr = null;
+        for (Map.Entry<String, Map<Long, Address>> e : byReg.entrySet()) {
+            int distinct = e.getValue().size();
+            if (distinct < 2) continue;
+            Address fa = firstSeen.get(e.getKey());
+            if (distinct > bestDistinct || (distinct == bestDistinct && fa.compareTo(bestAddr) < 0)) {
+                bestDistinct = distinct;
+                bestAddr = fa;
+                dispatchReg = e.getKey();
+            }
+        }
+        if (dispatchReg == null) return;
+        Map<Long, Address> discToTarget = byReg.get(dispatchReg);
 
         // Pass 2: For each branch target, find the first call in the block and rename it
         for (Map.Entry<Long, Address> entry : discToTarget.entrySet()) {
@@ -580,7 +328,11 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
                     if (target != null && target.isMemoryAddress()) {
                         Function f = program.getFunctionManager().getFunctionAt(target);
                         if (f != null && f.getName().startsWith("FUN_") && !f.isThunk()) {
-                            String suffix = Long.toUnsignedString(disc);
+                            // Native byte discriminators stay decimal (handler_disc_3); the
+                            // wide Anchor sha256 discriminators read better as hex.
+                            String suffix = Long.compareUnsigned(disc, 0xFFL) <= 0
+                                ? Long.toUnsignedString(disc)
+                                : "0x" + Long.toUnsignedString(disc, 16);
                             renameAndTypeAs(f, "handler_disc_" + suffix, "process_instruction", log);
                             inst.setComment(CodeUnit.EOL_COMMENT,
                                 "Instruction Handler for synthetic dispatch case " + suffix);
@@ -600,6 +352,47 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
             }
         }
 
+    }
+
+    private Long getBranchCompareImmediate(Instruction inst) {
+        // Solana SBF conditional branches are rendered as:
+        //   JEQ R6, 0x4, 0x00000a28
+        // Operand 1 is the compared discriminator/case value. Operand 2 is the
+        // branch target and must not be used as a discriminator.
+        if (inst.getNumOperands() < 3) return null;
+        Object[] compareObjects = inst.getOpObjects(1);
+        for (Object obj : compareObjects) {
+            if (obj instanceof Scalar) {
+                return ((Scalar)obj).getUnsignedValue();
+            }
+        }
+        return null;
+    }
+
+    /** The register being compared in a SBF conditional branch (operand 0), or null. */
+    private String getBranchCompareRegister(Instruction inst) {
+        if (inst.getNumOperands() < 3) return null;
+        return registerOperand(inst, 0);
+    }
+
+    /** Name of the register in the given operand position, or null if it is not a register. */
+    private String registerOperand(Instruction inst, int opIndex) {
+        if (opIndex < 0 || opIndex >= inst.getNumOperands()) return null;
+        for (Object obj : inst.getOpObjects(opIndex)) {
+            if (obj instanceof ghidra.program.model.lang.Register) {
+                return ((ghidra.program.model.lang.Register)obj).getName();
+            }
+        }
+        return null;
+    }
+
+    /** First scalar (immediate) operand value of an instruction, or null. */
+    private Long firstScalar(Instruction inst) {
+        for (int i = 0; i < inst.getNumOperands(); i++) {
+            Scalar sc = inst.getScalar(i);
+            if (sc != null) return sc.getValue();
+        }
+        return null;
     }
 
     private void identifyHandlerImplementationCallees(Program program, TaskMonitor monitor, MessageLog log)
@@ -985,14 +778,57 @@ public class SolanaFunctionAnalyzer extends AbstractAnalyzer {
             if (helper != null) {
                 FunctionDefinition funcDef = helper.getSyscallFunctionDef(typeName);
                 if (funcDef != null) {
-                    ghidra.app.cmd.function.ApplyFunctionSignatureCmd cmd = 
-                        new ghidra.app.cmd.function.ApplyFunctionSignatureCmd(f.getEntryPoint(), funcDef, SourceType.ANALYSIS);
-                    cmd.applyTo(f.getProgram());
+                    if ("process_instruction".equals(typeName)) {
+                        // process_instruction (and handlers sharing its ABI) returns the
+                        // 16-byte Rust ProgramResult via a hidden sret pointer in R1, which
+                        // shifts the real args to R2+. That 6-slot shape overflows the five
+                        // input registers, so the default ApplyFunctionSignatureCmd lets the
+                        // decompiler re-derive storage and degrade accounts/program_id back to
+                        // `long`. Pin the params to the registers explicitly instead.
+                        applyShiftedRegisterStorage(f, funcDef);
+                    } else {
+                        ghidra.app.cmd.function.ApplyFunctionSignatureCmd cmd =
+                            new ghidra.app.cmd.function.ApplyFunctionSignatureCmd(f.getEntryPoint(), funcDef, SourceType.ANALYSIS);
+                        cmd.applyTo(f.getProgram());
+                    }
                 }
             }
         } catch (Exception e) {
             if (log != null) log.appendMsg("Error naming/typing function " + f.getName() + ": " + e.getMessage());
         }
+    }
+
+    /**
+     * Apply a sret-shifted Rust prototype by pinning its leading parameters onto the
+     * eBPF input registers (R1-R5) with custom storage. The cspec exposes only five
+     * input registers, so we map the FunctionDefinition's first five params in order
+     * and drop any overflow (e.g. instruction_data_len, which lowers onto the stack
+     * and is rarely read in handlers). Custom storage + IMPORTED source commits the
+     * prototype so the decompiler preserves the RustAccountInfo and SolPubkey pointer
+     * typing instead of re-deriving it from data flow.
+     *
+     * Caveat: this is also applied to handler_disc_* functions, which are assumed to
+     * share the (sret, program_id, accounts, accounts_len, data) ABI. When the dispatch
+     * heuristic instead names a thin helper (e.g. a `derive(sret, seeds, seeds_len,
+     * program_id)` PDA wrapper), the forced names are wrong — cosmetic only, the values
+     * and control flow stay faithful. Tightening this needs leaf-handler vs helper
+     * discrimination at the call site.
+     */
+    private void applyShiftedRegisterStorage(Function f, FunctionDefinition funcDef) throws Exception {
+        Program prog = f.getProgram();
+        ghidra.program.model.lang.Language lang = prog.getLanguage();
+        String[] inRegs = {"R1", "R2", "R3", "R4", "R5"};
+        ParameterDefinition[] args = funcDef.getArguments();
+        List<Variable> params = new ArrayList<>();
+        for (int i = 0; i < args.length && i < inRegs.length; i++) {
+            ghidra.program.model.lang.Register reg = lang.getRegister(inRegs[i]);
+            if (reg == null) return;  // unexpected processor mismatch — leave the function as-is
+            VariableStorage storage = new VariableStorage(prog, reg);
+            params.add(new ParameterImpl(args[i].getName(), args[i].getDataType(), storage, prog));
+        }
+        ReturnParameterImpl ret = new ReturnParameterImpl(funcDef.getReturnType(), prog);
+        f.updateFunction(null, ret, params,
+            Function.FunctionUpdateType.CUSTOM_STORAGE, true, SourceType.IMPORTED);
     }
 
     @Override

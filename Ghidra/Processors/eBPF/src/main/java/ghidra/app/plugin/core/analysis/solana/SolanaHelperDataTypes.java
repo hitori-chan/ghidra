@@ -261,6 +261,20 @@ public class SolanaHelperDataTypes implements Closeable {
             DataType rustDeserializeResultPtr = new PointerDataType(rustDeserializeResultDt);
 
             // ================================================================
+            // SolProgramResult — the Rust `ProgramResult` (Result<(), ProgramError>)
+            // lowering returned by process_instruction / handlers. It is 16 bytes,
+            // so the SBF ABI returns it via a hidden sret pointer in R1 (shifting the
+            // real args to R2+). Using an 8-byte return here would make Ghidra return
+            // it in R0 and map args to R1-R5, shifting every handler's parameters by
+            // one register (program_id<-sret, accounts<-program_id, ...). A >8-byte
+            // return makes the decompiler model the hidden return pointer correctly.
+            // ================================================================
+            StructureDataType solProgramResult = new StructureDataType("SolProgramResult", 16);
+            solProgramResult.replaceAtOffset(0, solError, 8, "code", "0=Ok, else Err (SolanaError)");
+            solProgramResult.replaceAtOffset(8, u8Ptr, 8, "payload", "Err payload pointer (if any)");
+            DataType solProgramResultDt = dtm.addDataType(solProgramResult, null);
+
+            // ================================================================
             // Sysvar structures
             // ================================================================
             StructureDataType solClock = new StructureDataType("SolClock", 40);
@@ -452,9 +466,18 @@ public class SolanaHelperDataTypes implements Closeable {
                 p("sysvar", solClockPtr));
             addFunc(syscallFunctionDefs, dtm, "sol_lib_get_rent", solError,
                 p("sysvar", solRentPtr));
-            addFunc(syscallFunctionDefs, dtm, "process_instruction", solError,
-                p("program_id", solPubkeyPtr), p("accounts", rustAccountInfoPtr),
-                p("accounts_len", u64), p("instruction_data", u8Ptr), p("instruction_data_len", u64));
+            // Model the SBF struct-return ABI explicitly: the hidden sret pointer is
+            // the first register (R1), so the real args land in R2+. Declaring it as a
+            // leading parameter (rather than relying on Ghidra's auto-sret, which drops
+            // the declared types of the shifted params) keeps program_id/accounts typed
+            // AND maps every arg to the correct register. Return is void: the result is
+            // written through `_result`.
+            DataType solProgramResultPtr = new PointerDataType(solProgramResultDt);
+            addFunc(syscallFunctionDefs, dtm, "process_instruction",
+                ghidra.program.model.data.VoidDataType.dataType,
+                p("_result", solProgramResultPtr), p("program_id", solPubkeyPtr),
+                p("accounts", rustAccountInfoPtr), p("accounts_len", u64),
+                p("instruction_data", u8Ptr), p("instruction_data_len", u64));
             addFunc(syscallFunctionDefs, dtm, "entrypoint", solError,
                 p("input", u8Ptr));
 
